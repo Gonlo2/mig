@@ -1,0 +1,28 @@
+[[fields]]
+name = "ChannelId"
+size = 64
+
+[[fields]]
+name = "DeleteAt"
+size = 4
+
+[[fields]]
+name = "CreateAt"
+size = 4
+
+[[queries]]
+order_by = [["CreateAt", false]]
+[queries.where]
+operator = "and"
+[[queries.where.values]]
+operator = "="
+column = "ChannelId"
+value = "9tne5g44z7f1zn4z1whebb7jna"
+[[queries.where.values]]
+operator = "="
+column = "DeleteAt"
+value = 0
+[[queries.where.values]]
+operator = "<"
+column = "CreateAt"
+value = 1582683608013

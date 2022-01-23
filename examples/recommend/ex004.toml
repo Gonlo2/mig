@@ -1,0 +1,25 @@
+[[fields]]
+name = "id"
+size = 4
+
+[[fields]]
+name = "audit_time"
+size = 4
+
+[[fields]]
+name = "status"
+size = 1
+
+[[queries]]
+order_by = [["audit_time", false], ["id", false]]
+limit = 5
+[queries.where]
+operator = "and"
+[[queries.where.values]]
+operator = "<"
+column = "audit_time"
+value = 122222
+[[queries.where.values]]
+operator = "="
+column = "status"
+value = "ONLINE"

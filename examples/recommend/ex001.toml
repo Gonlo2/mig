@@ -1,0 +1,108 @@
+# Queries from http://mysql.rjweb.org/doc.php/index_cookbook_mysql
+[[fields]]
+name = "aaa"
+size = 4
+
+[[fields]]
+name = "bbb"
+size = 4
+
+[[fields]]
+name = "ccc"
+size = 255
+
+[[fields]]
+name = "xxx"
+size = 255
+
+[[unique_indexes]]
+columns = ["id"]
+
+[[queries]]
+[queries.where]
+operator = "="
+column = "aaa"
+value = 123
+
+[[queries]]
+[queries.where]
+operator = "and"
+[[queries.where.values]]
+operator = ">="
+column = "aaa"
+value = 22
+[[queries.where.values]]
+operator = "<="
+column = "aaa"
+value = 44
+
+[[queries]]
+[queries.where]
+operator = "and"
+[[queries.where.values]]
+operator = ">="
+column = "aaa"
+value = 22
+[[queries.where.values]]
+operator = "="
+column = "bbb"
+value = 1
+
+[[queries]]
+[queries.where]
+operator = "and"
+[[queries.where.values]]
+operator = ">="
+column = "aaa"
+value = 22
+[[queries.where.values]]
+operator = ">"
+column = "ccc"
+value = 'xyz'
+
+[[queries]]
+order_by = ["aaa"] # Order in ascendance order
+[queries.where]
+operator = ">="
+column = "aaa"
+value = 22
+
+[[queries]]
+order_by = [["aaa", false]] # Order in descendance order
+
+[[queries]]
+group_by = ["ccc"]
+[queries.where]
+operator = "and"
+[[queries.where.values]]
+operator = "="
+column = "aaa"
+value = 123
+[[queries.where.values]]
+operator = "="
+column = "bbb"
+value = 1
+
+[[queries]]
+group_by = ["ccc"]
+order_by = ["ddd"]
+[queries.where]
+operator = "="
+column = "aaa"
+value = 123
+
+[[queries]]
+group_by = ["ccc"]
+order_by = ["ccc"]
+[queries.where]
+operator = "="
+column = "aaa"
+value = 123
+
+[[queries]]
+order_by = ["ccc"]
+limit = 10
+[queries.where]
+operator = ">="
+column = "ccc"
+value = 432
