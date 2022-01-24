@@ -181,6 +181,30 @@ class Query(Sql):
     pass
 
 
+class Logger:
+    _id = 0
+
+    class Level(Enum):
+        WARNING = "WARNING"
+
+    def __init__(self, messages=None):
+        self._messages = messages or {}
+
+    def warning(self, tmpl, *args, **kwargs):
+        self._add_log(self.Level.WARNING, tmpl, args, kwargs)
+
+    def _add_log(self, level, tmpl, args, kwargs):
+        self._messages[Logger._id] = (level, tmpl.format(*args, **kwargs))
+        Logger._id += 1
+
+    def union(self, other):
+        messages = {**self._messages, **other._messages}
+        return Logger(messages)
+
+    def messages(self):
+        return [v for _, v in sorted(self._messages.items())]
+
+
 @dataclass
 class SelectQuery(Query):
     where: Optional[Operator]
@@ -203,19 +227,20 @@ class SelectQuery(Query):
             parts.append(f"    LIMIT {self.limit}")
         return '\n'.join(parts)
 
-    def generate_index(self, queries):
+    def generate_index(self, query_id):
+        logger = Logger()
+
         order_by_columns = [name for name, _ in self.order_by or []]
         group_by_columns = set(x for x in self.group_by or order_by_columns)
         if not all(x in group_by_columns for x in order_by_columns):
-            #TODO Isn't possible generate a good index for the `order by` and `group by`
-            # so we chose optimize the `group by`
+            logger.warning("Isn't possible optimize both the `ORDER BY` and the `GROUP BY` in the query #{}, so only the `GROUP BY` will be optimized", query_id)
             order_by_columns = []
 
         if self.where is None:
             subindexes = self._generate_subindexes({},
                                                    order_by_columns,
                                                    group_by_columns)
-            return Index(subindexes, queries=queries)
+            return Index(subindexes, queries=set([query_id]), logger=logger)
 
         flatten_operators = self.where.flatten()
         columns_restrictions = [op.get_column_restrictions() for op in flatten_operators]
@@ -231,7 +256,7 @@ class SelectQuery(Query):
 
         if order_by_columns:
             # Avoid add the order by to the index if some comparation value
-            # use a `in` operator or a number of `or`
+            # use a `IN` operator or a number of `OR`
             could_not_use_order_by = any(
                 c.restriction.has_eq()
                 and c.name not in group_by_columns
@@ -239,6 +264,7 @@ class SelectQuery(Query):
                 for c in union_of_columns.values()
             )
             if could_not_use_order_by:
+                logger.warning("Isn't possible optimize the `ORDER BY` in the query #{} because some of the `WHERE` filter a column with multiple values, probably with an `IN` or an `OR`. Remove the `ORDER BY` or execute multiple queries concatenating the output with an `UNION`", query_id)
                 order_by_columns = []
                 if not self.group_by:
                     group_by_columns = set()
@@ -250,10 +276,14 @@ class SelectQuery(Query):
             subindexes = self._generate_subindexes(columns,
                                                    order_by_columns,
                                                    group_by_columns)
-            index = Index(subindexes, queries=queries)
+            index = Index(subindexes, queries=set([query_id]), logger=logger)
             indexes.append(index)
 
-        return union_indexes(indexes)
+        index = union_indexes(indexes)
+        if index.len() != max(x.len() for x in indexes):
+            #TODO deal with empty indexes
+            index.logger.warning("Isn't possible optimize all the `OR` operator of the query #{}, try to refactor it to execute multiple queries concatenating the output with an `UNION`", query_id)
+        return index
 
     def _generate_subindexes(self, columns, order_by_columns, group_by_columns):
         subindexes = []
@@ -371,7 +401,7 @@ class Subindex:
     def num_max_searchs(self, table):
         raise NotImplementedError
 
-    def choose_recomendation(self, table):
+    def choose_recommendation(self, table):
         raise NotImplementedError
 
     def columns(self, idx):
@@ -433,7 +463,7 @@ class OrderedSubindex:
             rr += r
         return rr
 
-    def choose_recomendation(self, table):
+    def choose_recommendation(self, table):
         return self._columns
 
     def columns(self, idx):
@@ -501,7 +531,7 @@ class UnorderedSubindex:
             rr += r
         return rr
 
-    def choose_recomendation(self, table):
+    def choose_recommendation(self, table):
         return list(sorted(self._columns.values(), key=lambda x: x.priority(table)))
 
     def columns(self, idx):
@@ -565,7 +595,7 @@ class MultipleSubindex:
         c = min(self._columns.values(), key=lambda x: x.priority(table))
         return c.num_max_searchs()
 
-    def choose_recomendation(self, table):
+    def choose_recommendation(self, table):
         return [min(self._columns.values(), key=lambda x: x.priority(table))]
 
     def columns(self, idx):
@@ -590,26 +620,26 @@ class MultipleSubindex:
 
 
 def union_indexes(indexes):
-    tmp_index = TmpIndex([], set())
+    queries = set()
+    logger = Logger()
     for index in indexes:
-        tmp_index.queries.update(index.queries)
+        queries.update(index.queries)
+        logger = logger.union(index.logger)
 
-    tmp_indexes = [TmpIndex(list(reversed(x._subindexes)), set(x.queries))
-                   for x in indexes]
-
+    tmp_index = TmpIndex([])
+    tmp_indexes = [TmpIndex(list(reversed(x._subindexes))) for x in indexes]
     while tmp_indexes:
         subindex = _get_prefix(tmp_indexes)
         tmp_index = tmp_index.append(subindex)
         if subindex.len() < tmp_indexes[-1].subindexes[-1].len():
             break
         tmp_indexes = _remove_prefix(tmp_indexes, subindex)
-    return tmp_index.to_index()
+    return tmp_index.to_index(queries, logger)
 
 
 @dataclass
 class TmpIndex:
     subindexes: List[Subindex]
-    queries: Set[int]
 
     def append(self, subindex):
         subindexes = list(self.subindexes)
@@ -618,15 +648,15 @@ class TmpIndex:
             new_subindex = self.subindexes[-1].append_if_possible(subindex)
             if new_subindex is not None:
                 subindexes[-1] = new_subindex
-                return TmpIndex(subindexes, set(self.queries))
+                return TmpIndex(subindexes)
         subindexes.append(subindex)
-        return TmpIndex(subindexes, set(self.queries))
+        return TmpIndex(subindexes)
 
-    def to_index(self):
-        return Index(self.subindexes, self.queries)
+    def to_index(self, queries, logger):
+        return Index(self.subindexes, queries, logger)
 
     def clone(self):
-        return TmpIndex(list(self.subindexes), set(self.queries))
+        return TmpIndex(list(self.subindexes))
 
 
 def _get_prefix(tmp_indexes):
@@ -655,9 +685,10 @@ def _remove_prefix(tmp_indexes, subindex):
 
 
 class Index:
-    def __init__(self, subindexes: List[Subindex], queries: Set[int]):
+    def __init__(self, subindexes: List[Subindex], queries: Set[int], logger: Logger):
         self._subindexes = subindexes
         self.queries = queries
+        self.logger = logger
         self._subindexes_mapping = self._make_subindexes_mapping()
 
     def __repr__(self):
@@ -696,10 +727,10 @@ class Index:
             rr += r
         return rr
 
-    def choose_recomendation(self, table):
+    def choose_recommendation(self, table):
         example = []
         for x in self._subindexes:
-            example.extend(x.choose_recomendation(table))
+            example.extend(x.choose_recommendation(table))
         return example
 
     def columns_till(self, till):
@@ -935,7 +966,7 @@ def recommend_cmd(args):
         print(f"Query #{i}")
         print(textwrap.indent(query.generate_sql(), "    "))
 
-        index = query.generate_index(set([i]))
+        index = query.generate_index(i)
         if index.len() > 0:
             indexes.append(index)
 
@@ -962,7 +993,8 @@ def recommend_cmd(args):
                         uk_columns[c.name] = c
         if queries_covered:
             subindex = UnorderedSubindex(uk_columns)
-            uk = Index([subindex], queries_covered)
+            #TODO Deal with the indexes logger
+            uk = Index([subindex], queries_covered, logger=Logger())
             unique_indexes.append(uk)
 
     indexes.extend(unique_indexes)
@@ -976,12 +1008,16 @@ def recommend_cmd(args):
     for i, index in enumerate(indexes):
         print(f"Index #{i}")
         print(textwrap.indent(index.explain(), "    "))
-        columns = index.choose_recomendation(table)
+        columns = index.choose_recommendation(table)
         columns_names = ', '.join(f"`{x.name}`" for x in columns)
         to_use_by = ', '.join(f"#{x}" for x in sorted(index.queries))
         print(f"    To use by query: {to_use_by}")
         print(f"    Max size: {index.max_size(table)}")
-        print(f"    Recomendation: {columns_names}")
+        print(f"    Recommendation: {columns_names}")
+        if messages := index.logger.messages():
+            print(f"    Log messages:")
+            for level, msg in messages:
+                print(f"      - {level.value}: {msg}")
 
 
 def main():

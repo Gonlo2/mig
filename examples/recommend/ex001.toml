@@ -106,3 +106,35 @@ limit = 10
 operator = ">="
 column = "ccc"
 value = 432
+
+[[queries]]
+order_by = ["aaa"]
+limit = 10
+[queries.where]
+operator = "in"
+column = "ccc"
+values = [1,2,3]
+
+[[queries]]
+[queries.where]
+operator = "or"
+[[queries.where.values]]
+operator = "and"
+[[queries.where.values.values]]
+operator = "="
+column = "aaa"
+value = 123
+[[queries.where.values.values]]
+operator = "="
+column = "bbb"
+value = 1
+[[queries.where.values]]
+operator = "and"
+[[queries.where.values.values]]
+operator = "="
+column = "ccc"
+value = 22
+[[queries.where.values.values]]
+operator = "="
+column = "aaa"
+value = 123

@@ -57,22 +57,35 @@ Query #9
         WHERE `ccc` >= 432
         ORDER BY `ccc` ASC
         LIMIT 10
+Query #10
+    SELECT * FROM `whatever`
+        WHERE `ccc` in (1,2,3)
+        ORDER BY `aaa` ASC
+        LIMIT 10
+Query #11
+    SELECT * FROM `whatever`
+        WHERE ((`aaa` = 123) AND (`bbb` = 1)) OR ((`ccc` = 22) AND (`aaa` = 123))
 
 Some optimal indexes patterns
 --------------------------------------------------------------------------------
 Index #0
     Ordered subindex with the columns
       0. `ccc`
-    To use by query: #9
+    To use by query: #9, #10
     Max size: 255
-    Recomendation: `ccc`
+    Recommendation: `ccc`
+    Log messages:
+      - WARNING: Isn't possible optimize the `ORDER BY` in the query #10 because some of the `WHERE` filter a column with multiple values, probably with an `IN` or an `OR`. Remove the `ORDER BY` or execute multiple queries concatenating the output with an `UNION`
 Index #1
     Ordered subindex with the columns
       0. `aaa`
       1. `ccc`
-    To use by query: #0, #1, #3, #4, #5, #7, #8
+    To use by query: #0, #1, #3, #4, #5, #7, #8, #11
     Max size: 259
-    Recomendation: `aaa`, `ccc`
+    Recommendation: `aaa`, `ccc`
+    Log messages:
+      - WARNING: Isn't possible optimize both the `ORDER BY` and the `GROUP BY` in the query #7, so only the `GROUP BY` will be optimized
+      - WARNING: Isn't possible optimize all the `OR` operator of the query #11, try to refactor it to execute multiple queries concatenating the output with an `UNION`
 Index #2
     Ordered subindex with the columns
       0. `bbb`
@@ -80,12 +93,12 @@ Index #2
       2. `ccc`
     To use by query: #2, #6
     Max size: 263
-    Recomendation: `bbb`, `aaa`, `ccc`
+    Recommendation: `bbb`, `aaa`, `ccc`
 ```
 
 ## Table definition file format
 
-At the moment only the btree indexes work with the operators `and`, `or`, `=`, `is`, `<=`, `>=`, `>`, `<` and the query options `ORDER BY`, `GROUP BY` and `LIMIT`.
+At the moment only the btree indexes work with the operators `AND`, `OR`, `=`, `IS`, `<=`, `>=`, `>`, `<` and the query options `ORDER BY`, `GROUP BY` and `LIMIT`.
 
 You could see some examples [here](./examples/recommend/).
 
