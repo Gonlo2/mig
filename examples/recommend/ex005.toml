@@ -1,0 +1,20 @@
+[[fields]]
+name = "id"
+size = 4
+
+[[fields]]
+name = "audit_time"
+size = 4
+
+[[fields]]
+name = "status"
+size = 1
+
+[[queries]]
+sql = """
+    SELECT 1,2,3 FROM `foo`
+        WHERE (`audit_time` in (1,2,3)) AND (`status` = "ONLINE")
+        GROUP BY `audit_time`, `id`
+        ORDER BY `audit_time`, `id`
+        LIMIT 5
+"""

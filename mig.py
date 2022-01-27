@@ -8,6 +8,7 @@ from enum import Enum
 from heapq import heappop, heappush
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import sqlglot
 import tomlkit
 
 
@@ -142,10 +143,18 @@ class AndOperator(VariableOperator):
     def flatten(self):
         if not self.values:
             return [self]
-        flatten = [[x] for x in self.values[0].flatten()]
-        for i in range(1, len(self.values)):
+        to_check = [self]
+        values = []
+        while to_check:
+            for x in to_check.pop().values:
+                if isinstance(x, AndOperator):
+                    to_check.append(x)
+                else:
+                    values.append(x)
+        flatten = [[x] for x in values[0].flatten()]
+        for i in range(1, len(values)):
             tmp_flatten = []
-            for x in self.values[i].flatten():
+            for x in values[i].flatten():
                 for y in flatten:
                     tmp_flatten.append(y + [x])
             flatten = tmp_flatten
@@ -171,7 +180,15 @@ class AndOperator(VariableOperator):
 
 class OrOperator(VariableOperator):
     def flatten(self):
-        return self.values
+        to_check = [self]
+        values = []
+        while to_check:
+            for x in to_check.pop().values:
+                if isinstance(x, OrOperator):
+                    to_check.append(x)
+                else:
+                    values.extend(x.flatten())
+        return values
 
     def generate_sql(self):
         return ' OR '.join(f"({x.generate_sql()})" for x in self.values)
@@ -796,16 +813,90 @@ class Parser:
         for x in table_def.get('queries'):
             where = None
             order_by = None
+            if sql := x.get('sql'):
+                expression_tree = sqlglot.parse_one(sql)
+                x = self._parse_sql(expression_tree)
             if value := x.get('where'):
                 where = self._parse_where(value)
             if value := x.get('order_by'):
                 order_by = self._parse_order_by(value)
             group_by = x.get('group_by')
             limit = x.get('limit')
-            query = SelectQuery(where=where, limit=limit, order_by=order_by, group_by=group_by)
+            query = SelectQuery(where=where, group_by=group_by, order_by=order_by, limit=limit)
             queries.append(query)
 
         return Table(fields, unique_indexes, queries)
+
+    def _parse_sql(self, tree):
+        if isinstance(tree, sqlglot.expressions.Select):
+            query = {}
+            if value := tree.args['where']:
+                query['where'] = self._parse_sql(value)
+            if value := tree.args['group']:
+                query['group_by'] = self._parse_sql(value)
+            if value := tree.args['order']:
+                query['order_by'] = self._parse_sql(value)
+            if value := tree.args['limit']:
+                query['limit'] = self._parse_sql(value)
+            return query
+        if isinstance(tree, sqlglot.expressions.Where):
+            return self._parse_sql(tree.this)
+        if isinstance(tree, sqlglot.expressions.Group):
+            return [self._parse_sql(x) for x in tree.args['expressions']]
+        if isinstance(tree, sqlglot.expressions.Order):
+            return [self._parse_sql(x) for x in tree.args['expressions']]
+        if isinstance(tree, sqlglot.expressions.Ordered):
+            col = self._parse_sql(tree.this)
+            desc = tree.args['desc']
+            return [col, False] if desc else col
+        if isinstance(tree, sqlglot.expressions.Limit):
+            return self._parse_sql(tree.this)
+        if isinstance(tree, sqlglot.expressions.Column):
+            return self._parse_sql(tree.this)
+
+        if isinstance(tree, sqlglot.expressions.Paren):
+            return self._parse_sql(tree.this)
+        if isinstance(tree, sqlglot.expressions.And):
+            v1 = self._parse_sql(tree.this)
+            v2 = self._parse_sql(tree.args['expression'])
+            return {"operator": "and", "values": [v1, v2]}
+        if isinstance(tree, sqlglot.expressions.Or):
+            v1 = self._parse_sql(tree.this)
+            v2 = self._parse_sql(tree.args['expression'])
+            return {"operator": "or", "values": [v1, v2]}
+
+        if isinstance(tree, sqlglot.expressions.LT):
+            col = self._parse_sql(tree.this)
+            val = self._parse_sql(tree.args['expression'])
+            return {"operator": "<", "column": col, "value": val}
+        if isinstance(tree, sqlglot.expressions.LTE):
+            col = self._parse_sql(tree.this)
+            val = self._parse_sql(tree.args['expression'])
+            return {"operator": "<=", "column": col, "value": val}
+        if isinstance(tree, sqlglot.expressions.GT):
+            col = self._parse_sql(tree.this)
+            val = self._parse_sql(tree.args['expression'])
+            return {"operator": ">", "column": col, "value": val}
+        if isinstance(tree, sqlglot.expressions.GTE):
+            col = self._parse_sql(tree.this)
+            val = self._parse_sql(tree.args['expression'])
+            return {"operator": ">=", "column": col, "value": val}
+        if isinstance(tree, sqlglot.expressions.EQ):
+            col = self._parse_sql(tree.this)
+            val = self._parse_sql(tree.args['expression'])
+            return {"operator": "=", "column": col, "value": val}
+        if isinstance(tree, sqlglot.expressions.In):
+            col = self._parse_sql(tree.this)
+            vals = [self._parse_sql(x) for x in tree.args['expressions']]
+            return {"operator": "in", "column": col, "values": vals}
+
+        if isinstance(tree, sqlglot.expressions.Identifier):
+            #TODO Need to remove inner quotes (?)
+            return tree.this.strip('`')
+        if isinstance(tree, sqlglot.expressions.Literal):
+            return tree.this if tree.args['is_string'] else int(tree.this)
+
+        raise NotImplementedError
 
     def _parse_where(self, where):
         if not isinstance(where, dict):
@@ -1015,7 +1106,7 @@ def recommend_cmd(args):
         print(f"    Max size: {index.max_size(table)}")
         print(f"    Recommendation: {columns_names}")
         if messages := index.logger.messages():
-            print(f"    Log messages:")
+            print("    Log messages:")
             for level, msg in messages:
                 print(f"      - {level.value}: {msg}")
 

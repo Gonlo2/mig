@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "2de286da95c87e9ba5b304cb1d7aa3da83ce93db1acc841f552d9a1c5ad49a50"
+            "sha256": "1112367bfa6abd4f9aa78b768dc12605b06dbe19b720d9c03ef82b97b61ff1f6"
         },
         "pipfile-spec": 6,
         "requires": {},
@@ -14,6 +14,14 @@
         ]
     },
     "default": {
+        "sqlglot": {
+            "hashes": [
+                "sha256:1e685dae15f0caa2196078c333b32725768fe272dd2bae0ba16e09d02b7f4b94",
+                "sha256:dd1679fc0d1f0e886bf21eecd6d8f233b3dc46959fa15784b6d12128cc0018c9"
+            ],
+            "index": "pypi",
+            "version": "==1.20.0"
+        },
         "tomlkit": {
             "hashes": [
                 "sha256:29e84a855712dfe0e88a48f6d05c21118dbafb283bb2eed614d46f80deb8e9a1",
