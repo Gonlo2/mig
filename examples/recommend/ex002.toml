@@ -14,6 +14,9 @@ size = 255
 name = "age"
 size = 1
 
+[[unique_indexes]]
+columns = ["id"]
+
 [[queries]]
 order_by = [["age", false]]
 [queries.where]

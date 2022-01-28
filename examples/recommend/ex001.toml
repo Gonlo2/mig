@@ -1,5 +1,9 @@
 # Queries from http://mysql.rjweb.org/doc.php/index_cookbook_mysql
 [[fields]]
+name = "id"
+size = 4
+
+[[fields]]
 name = "aaa"
 size = 4
 

@@ -1,4 +1,12 @@
 [[fields]]
+name = "Id"
+size = 4
+
+[[fields]]
+name = "UID"
+size = 255
+
+[[fields]]
 name = "ChannelId"
 size = 64
 
@@ -9,6 +17,11 @@ size = 4
 [[fields]]
 name = "CreateAt"
 size = 4
+
+[[unique_indexes]]
+columns = ["Id"]
+[[unique_indexes]]
+columns = ["UID"]
 
 [[queries]]
 order_by = [["CreateAt", false]]

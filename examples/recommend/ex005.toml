@@ -10,6 +10,9 @@ size = 4
 name = "status"
 size = 1
 
+[[unique_indexes]]
+columns = ["id"]
+
 [[queries]]
 sql = """
     SELECT 1,2,3 FROM `foo`

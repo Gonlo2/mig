@@ -10,6 +10,9 @@ size = 4
 name = "status"
 size = 1
 
+[[unique_indexes]]
+columns = ["id"]
+
 [[queries]]
 order_by = [["audit_time", false], ["id", false]]
 limit = 5

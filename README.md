@@ -11,13 +11,14 @@ First you need [pipenv](https://pipenv.pypa.io/en/latest/#) to install the depen
 ```shell
 $ pipenv run ./mig.py recommend examples/recommend/ex001.toml 
 Fields
-  `aaa` SIZE(4)
-  `bbb` SIZE(4)
-  `ccc` SIZE(255)
-  `xxx` SIZE(255)
+    `id` SIZE(4)
+    `aaa` SIZE(4)
+    `bbb` SIZE(4)
+    `ccc` SIZE(255)
+    `xxx` SIZE(255)
 
 Unique indexes
-  `id`
+    0. `id`
 
 Query #0
     SELECT * FROM `whatever`
@@ -66,34 +67,47 @@ Query #11
     SELECT * FROM `whatever`
         WHERE ((`aaa` = 123) AND (`bbb` = 1)) OR ((`ccc` = 22) AND (`aaa` = 123))
 
-Some optimal indexes patterns
+PK recommendation #0 with columns `id` and max size per row of 1311 bytes
 --------------------------------------------------------------------------------
 Index #0
-    Ordered subindex with the columns
-      0. `ccc`
+    Recommendation: PRIMARY KEY(`id`)
+    To use by query:
+    Max size with PK: 4 bytes
+    Pattern:
+        Ordered subindex with the columns
+            0. `id`
+Index #1
+    Recommendation: KEY(`ccc`)
     To use by query: #9, #10
-    Max size: 255
-    Recommendation: `ccc`
+    Max size with PK: 259 bytes
     Log messages:
       - WARNING: Isn't possible optimize the `ORDER BY` in the query #10 because some of the `WHERE` filter a column with multiple values, probably with an `IN` or an `OR`. Remove the `ORDER BY` or execute multiple queries concatenating the output with an `UNION`
-Index #1
-    Ordered subindex with the columns
-      0. `aaa`
-      1. `ccc`
+    Pattern:
+        Ordered subindex with the columns
+            0. `ccc`
+            1. `id`
+Index #2
+    Recommendation: KEY(`aaa`, `ccc`)
     To use by query: #0, #1, #3, #4, #5, #7, #8, #11
-    Max size: 259
-    Recommendation: `aaa`, `ccc`
+    Max size with PK: 263 bytes
     Log messages:
       - WARNING: Isn't possible optimize both the `ORDER BY` and the `GROUP BY` in the query #7, so only the `GROUP BY` will be optimized
       - WARNING: Isn't possible optimize all the `OR` operator of the query #11, try to refactor it to execute multiple queries concatenating the output with an `UNION`
-Index #2
-    Ordered subindex with the columns
-      0. `bbb`
-      1. `aaa`
-      2. `ccc`
+    Pattern:
+        Ordered subindex with the columns
+            0. `aaa`
+            1. `ccc`
+            2. `id`
+Index #3
+    Recommendation: KEY(`bbb`, `aaa`, `ccc`)
     To use by query: #2, #6
-    Max size: 263
-    Recommendation: `bbb`, `aaa`, `ccc`
+    Max size with PK: 267 bytes
+    Pattern:
+        Ordered subindex with the columns
+            0. `bbb`
+            1. `aaa`
+            2. `ccc`
+            3. `id`
 ```
 
 ## Table definition file format
