@@ -945,11 +945,44 @@ class SearchNode:
     size: int
     num_max_searchs: int
     num_queries_covered: int
+    num_queries_duplicated: int
     queries_covered: List[bool]
     indexes: List[Index]
 
+    @staticmethod
+    def new(num_queries):
+        queries_covered = [False] * num_queries
+        return SearchNode(0, 0, 0, 0, queries_covered, [])
+
     def key(self):
         return tuple(self.queries_covered)
+
+    def priority(self):
+        return (self.size, self.num_max_searchs, self.num_queries_duplicated)
+
+    def successors(self, table, indexes):
+        for index in indexes:
+            if all(self.queries_covered[i] for i in index.queries):
+                continue
+
+            queries_covered = list(self.queries_covered)
+            num_queries_covered = self.num_queries_covered
+            num_queries_duplicated = self.num_queries_duplicated
+            for i in index.queries:
+                if queries_covered[i]:
+                    num_queries_duplicated += 1
+                else:
+                    num_queries_covered += 1
+                queries_covered[i] = True
+            indexes = list(self.indexes)
+            indexes.append(index)
+            size = self.size + index.max_size(table)
+            num_max_searchs = self.num_max_searchs + index.num_max_searchs(table)
+            yield SearchNode(size=size, num_max_searchs=num_max_searchs,
+                             num_queries_covered=num_queries_covered,
+                             num_queries_duplicated=num_queries_duplicated,
+                             queries_covered=queries_covered,
+                             indexes=indexes)
 
 
 class IndexesSelector:
@@ -991,46 +1024,28 @@ class IndexesSelector:
                     other_index.queries.update(index.queries)
                     step_indexes[key] = other_index
 
+        # The indexes are sorted to make the search reproducible
         self._all_indexes = [v for _, v in sorted(all_indexes.items())]
 
     def _search_indexes(self):
-        queries_covered = [False] * len(self._table.queries)
-        sn = SearchNode(0, 0, 0, queries_covered, [])
-        idx = 0
-        heap = [((sn.size, sn.num_max_searchs, idx), sn)]
-        idx += 1
-        queries_covered_seen = {}
+        sn = SearchNode.new(len(self._table.queries))
+        heap = [(sn.priority(), 0, sn)]
+        idx = 1  # Use a counter to make the search reproducible
+        sn_seen = {}
         while heap:
-            _, sn = heappop(heap)
+            _, _, sn = heappop(heap)
             if sn.num_queries_covered == self._num_queries_covered:
                 return sn.indexes
-            for x in self._generate_sucessors(sn):
-                key = x.key()
-                value = (x.size, x.num_max_searchs)
-                seen_value = queries_covered_seen.get(key, value)
-                if seen_value >= value:
-                    queries_covered_seen[key] = value
-                    heappush(heap, ((x.size, x.num_max_searchs, idx), x))
+            for sn in sn.successors(self._table, self._all_indexes):
+                key = sn.key()
+                priority = sn.priority()
+                seen_priority = sn_seen.get(key, priority)
+                if seen_priority >= priority:
+                    sn_seen[key] = priority
+                    heappush(heap, (priority, idx, sn))
                     idx += 1
 
         return None
-
-    def _generate_sucessors(self, sn):
-        for index in self._all_indexes:
-            if any(not sn.queries_covered[i] for i in index.queries):
-                queries_covered = list(sn.queries_covered)
-                num_queries_covered = sn.num_queries_covered
-                for i in index.queries:
-                    if not queries_covered[i]:
-                        num_queries_covered += 1
-                    queries_covered[i] = True
-                indexes = list(sn.indexes)
-                indexes.append(index)
-                yield SearchNode(sn.size + index.max_size(self._table),
-                                 sn.num_max_searchs + index.num_max_searchs(self._table),
-                                 num_queries_covered,
-                                 queries_covered,
-                                 indexes)
 
 
 def recommend_cmd(args):
