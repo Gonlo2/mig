@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import logging
+import math
 import textwrap
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, FileType
 from collections import Counter, defaultdict
@@ -223,6 +224,9 @@ class Logger:
     def messages(self):
         return [v for _, v in sorted(self._messages.items())]
 
+    def clone(self):
+        return Logger(dict(self._messages))
+
 
 class SelectQuery(Query):
     def __init__(
@@ -254,7 +258,7 @@ class SelectQuery(Query):
             parts.append(f"    LIMIT {self.limit}")
         return '\n'.join(parts)
 
-    def generate_index(self, query_id):
+    def generate_indexes(self, query_id):
         logger = Logger()
 
         order_by_columns = [name for name, _ in self.order_by or []]
@@ -267,7 +271,7 @@ class SelectQuery(Query):
             subindexes = self._generate_subindexes({},
                                                    order_by_columns,
                                                    group_by_columns)
-            return Index(subindexes, queries=set([query_id]), logger=logger)
+            return [Index(subindexes, queries=set([query_id]), logger=logger)]
 
         flatten_operators = self.where.flatten()
         columns_restrictions = [op.get_column_restrictions()
@@ -306,11 +310,12 @@ class SelectQuery(Query):
             index = Index(subindexes, queries=set([query_id]), logger=logger)
             indexes.append(index)
 
-        index = union_indexes(indexes, allow_not_covered=True)
-        if index.len() != max(x.len() for x in indexes):
-            #TODO deal with empty indexes
-            index.logger.warning("Isn't possible optimize all the `OR` operator of the query #{}, try to refactor it to execute multiple queries concatenating the output with an `UNION`", query_id)
-        return index
+        result_indexes = union_indexes(indexes, allow_not_covered=True)
+        for index in result_indexes:
+            if index.len() != max(x.len() for x in indexes):
+                #TODO deal with empty indexes
+                index.logger.warning("Isn't possible optimize all the `OR` operator of the query #{}, try to refactor it to execute multiple queries concatenating the output with an `UNION`", query_id)
+        return result_indexes
 
     def _generate_subindexes(self, columns, order_by_columns, group_by_columns):
         subindexes = []
@@ -421,6 +426,15 @@ class Subindex:
     def columns_till(self, till):
         raise NotImplementedError
 
+    def columns_till_by_group(self, till):
+        columns_by_group = defaultdict(list)
+        for g, c in self.columns_till(till):
+            columns_by_group[g].append(c)
+        return columns_by_group
+
+    def columns_since(self, since):
+        raise NotImplementedError
+
     def max_size(self):
         raise NotImplementedError
 
@@ -430,10 +444,10 @@ class Subindex:
     def choose_recommendation(self):
         raise NotImplementedError
 
-    def columns(self, idx):
+    def column(self, idx, name):
         raise NotImplementedError
 
-    def column(self, idx, name):
+    def columns(self, idx):
         raise NotImplementedError
 
     def union(self, other, length):
@@ -442,49 +456,14 @@ class Subindex:
     def remove_prefix(self, other):
         raise NotImplementedError
 
-    def remove_last(self, n):
+    def split(self, i, suffix_column_names=None):
+        raise NotImplementedError
+
+    def num_permutations(self):
         raise NotImplementedError
 
 
-class FixedSubindex(Subindex):
-    def __init__(self, size, decorated):
-        self._size = size
-        self._decorated = decorated
-
-    def __repr__(self):
-        return f"FixedSubindex(size: {self._size})"
-
-    def unify(self):
-        return self
-
-    def append_if_possible(self, other):
-        return None
-
-    def key(self):
-        return f"fixed:{self._size}:{self._decorated.key()}"
-
-    def restriction_level(self):
-        return 3
-
-    def len(self):
-        return self._size
-
-    def columns_till(self, till):
-        return self._decorated.columns_till(till)
-
-    def columns(self, idx):
-        return self._decorated.columns(idx)
-
-    def column(self, idx, name):
-        return self._decorated.column(idx, name)
-
-    def remove_prefix(self, other):
-        new_decorated = self._decorated.remove_prefix(other)
-        size = max(0, self._size - other.len())
-        return FixedSubindex(size, new_decorated)
-
-
-class OrderedSubindex:
+class OrderedSubindex(Subindex):
     def __init__(self, columns):
         self._columns = columns
 
@@ -517,7 +496,10 @@ class OrderedSubindex:
         return len(self._columns)
 
     def columns_till(self, till):
-        return self._columns[:till]
+        return list(enumerate(self._columns[:till]))
+
+    def columns_since(self, since):
+        return list(enumerate(self._columns[:since]))
 
     def max_size(self):
         return sum(c.size for c in self._columns)
@@ -533,11 +515,11 @@ class OrderedSubindex:
     def choose_recommendation(self):
         return self._columns
 
-    def columns(self, idx):
-        return [self._columns[idx]]
-
     def column(self, idx, name):
         return c if (c := self._columns[idx]).name == name else None
+
+    def columns(self, idx):
+        return [self._columns[idx]]
 
     def union(self, other, length):
         new_columns = []
@@ -551,13 +533,17 @@ class OrderedSubindex:
         return OrderedSubindex(new_columns)
 
     def remove_prefix(self, other):
-        return OrderedSubindex(self._columns[other.len():])
+        return [(None, OrderedSubindex(self._columns[other.len():]))]
 
-    def remove_last(self, n):
-        return OrderedSubindex(self._columns[:-n])
+    def split(self, i, suffix_column_names=None):
+        return (OrderedSubindex(self._columns[:i]),
+                OrderedSubindex(self._columns[i:]))
+
+    def num_permutations(self):
+        return 1
 
 
-class UnorderedSubindex:
+class UnorderedSubindex(Subindex):
     def __init__(self, columns):
         self._columns = columns
 
@@ -588,7 +574,10 @@ class UnorderedSubindex:
         return len(self._columns)
 
     def columns_till(self, till):
-        return self._columns.values()
+        return [(i, c) for i, (_, c) in (enumerate(sorted(self._columns.items())))]
+
+    def columns_since(self, since):
+        return [(i, c) for i, (_, c) in (enumerate(sorted(self._columns.items())))]
 
     def max_size(self):
         return sum(c.size for c in self._columns.values())
@@ -604,27 +593,58 @@ class UnorderedSubindex:
     def choose_recommendation(self):
         return list(sorted(self._columns.values(), key=lambda x: x.priority()))
 
-    def columns(self, idx):
-        return self._columns.values()
-
     def column(self, idx, name):
         return self._columns.get(name)
 
+    def columns(self, idx):
+        return self._columns.values()
+
     def union(self, other, length):
         new_columns = {}
-        for oc in other.columns_till(length):
+        for _, oc in other.columns_till(length):
             if c := self._columns.get(oc.name):
                 new_columns[c.name] = c.union(oc)
         return UnorderedSubindex(new_columns)
 
     def remove_prefix(self, other):
-        new_columns = dict(self._columns)
-        for c in other.columns_till(other.len()):
-            new_columns.pop(c.name, None)
-        return UnorderedSubindex(new_columns)
+        ocolumns_by_group = other.columns_till_by_group(other.len())
+        # Allow only if all the columns are in the same group or
+        # if a group has only one column
+        all_groups_has_one_column = all(len(c) == 1 for c in ocolumns_by_group.values())
+        if (len(ocolumns_by_group) > 1) and not all_groups_has_one_column:
+            raise NotImplementedError
+        if (len(ocolumns_by_group) == 1) and all_groups_has_one_column:
+            result = []
+            for c in next(iter(ocolumns_by_group.values())):
+                columns = dict(self._columns)
+                columns.pop(c.name, None)
+                result.append((OrderedSubindex([c]), UnorderedSubindex(columns)))
+            return result
+
+        columns = dict(self._columns)
+        for ocolumns in ocolumns_by_group.values():
+            for c in ocolumns:
+                columns.pop(c.name, None)
+        return [(None, UnorderedSubindex(columns))]
+
+    def split(self, i, suffix_column_names=None):
+        if suffix_column_names is None:
+            raise NotImplementedError
+        columns = dict(self._columns)
+        columns_tail = {}
+        for name in suffix_column_names:
+            if c := columns.pop(name, None):
+                columns_tail[name] = c
+        if len(columns) != i:
+            raise NotImplementedError
+        return (UnorderedSubindex(columns),
+                UnorderedSubindex(columns_tail))
+
+    def num_permutations(self):
+        return math.factorial(len(self._columns))
 
 
-class MultipleSubindex:
+class MultipleSubindex(Subindex):
     def __init__(self, columns):
         self._columns = columns
 
@@ -655,7 +675,10 @@ class MultipleSubindex:
         return 1 if self._columns else 0
 
     def columns_till(self, till):
-        return self._columns.values()
+        return [(0, c) for c in self._columns.values()]
+
+    def columns_since(self, since):
+        return [(0, c) for c in self._columns.values()]
 
     def max_size(self):
         return max(c.size for c in self._columns.values())
@@ -667,49 +690,75 @@ class MultipleSubindex:
     def choose_recommendation(self):
         return [min(self._columns.values(), key=lambda x: x.priority())]
 
-    def columns(self, idx):
-        return self._columns.values()
-
     def column(self, idx, name):
         return self._columns.get(name)
 
+    def columns(self, idx):
+        return self._columns.values()
+
     def union(self, other, length):
         new_columns = {}
-        for oc in other.columns_till(length):
+        for _, oc in other.columns_till(length):
             if c := self._columns.get(oc.name):
                 new_columns[c.name] = c.union(oc)
         return MultipleSubindex(new_columns)
 
     def remove_prefix(self, other):
+        # The maximum length of a multiple subindex is one, so like
+        # we obtain as the prefix always the subindex with a lower
+        # or equal length the `other` variable could be only a
+        # multiple subindex or a ordered/unordered or length one.
+        # This allow return always a multiple subindex.
         new_columns = dict(self._columns)
-        for c in other.columns_till(other.len()):
-            new_columns.pop(c.name, None)
-        return MultipleSubindex(new_columns)
+        for columns in other.columns_till_by_group(other.len()).values():
+            if (len(columns) > 1) and (other.len() > 1):
+                raise NotImplementedError
+            for c in columns:
+                new_columns.pop(c.name, None)
+        return [(None, MultipleSubindex(new_columns))]
+
+    def num_permutations(self):
+        return len(self._columns)
 
 
 def union_indexes(indexes, allow_not_covered=False):
     tmp_index = TmpIndex([])
     tmp_indexes = [TmpIndex(list(reversed(x._subindexes))) for x in indexes]
-    while tmp_indexes:
-        subindex = _get_prefix(tmp_indexes)
-        tmp_index = tmp_index.append(subindex)
-        if subindex.len() < tmp_indexes[-1].subindexes[-1].len():
-            if not allow_not_covered:
-                return None
-            break
-        tmp_indexes = _remove_prefix(tmp_indexes, subindex)
+    all_tmp_indexes = [TmpUnionIndex(tmp_index, tmp_indexes)]
+    tmp_index_completed = []
+    while all_tmp_indexes:
+        tmp_union_index = all_tmp_indexes.pop()
+        subindex = _get_prefix(tmp_union_index.tmp_indexes)
+        if subindex.len() < tmp_union_index.tmp_indexes[-1].subindexes[-1].len():
+            if allow_not_covered:
+                tmp_index = tmp_union_index.tmp_index.clone()
+                tmp_index = tmp_index.append(subindex)
+                tmp_index_completed.append(tmp_index)
+            continue
+        for prefix, tmp_indexes in _remove_prefix(tmp_union_index.tmp_indexes, subindex):
+            tmp_index = tmp_union_index.tmp_index.clone()
+            tmp_index = tmp_index.append(prefix)
+            if tmp_indexes:
+                x = TmpUnionIndex(tmp_index, tmp_indexes)
+                all_tmp_indexes.append(x)
+            else:
+                tmp_index_completed.append(tmp_index)
 
-    queries = set()
-    logger = Logger()
-    uk_id = -1
-    new_index_len = tmp_index.len()
-    for index in indexes:
-        if allow_not_covered or index.len() <= new_index_len:
-            queries.update(index.queries)
-            logger = logger.union(index.logger)
-        if allow_not_covered or index.len() == new_index_len:
-            uk_id = max(uk_id, index.uk_id)
-    return tmp_index.to_index(queries, logger, uk_id)
+    result = {}
+    for tmp_index in tmp_index_completed:
+        queries = set()
+        logger = Logger()
+        uk_id = -1
+        new_index_len = tmp_index.len()
+        for index in indexes:
+            if allow_not_covered or index.len() <= new_index_len:
+                queries.update(index.queries)
+                logger = logger.union(index.logger)
+            if allow_not_covered or index.len() == new_index_len:
+                uk_id = max(uk_id, index.uk_id)
+        index = tmp_index.to_index(queries, logger, uk_id)
+        result[index.key()] = index
+    return [v for _, v in sorted(result.items())]
 
 
 @dataclass
@@ -738,6 +787,12 @@ class TmpIndex:
         return TmpIndex(list(self.subindexes))
 
 
+@dataclass
+class TmpUnionIndex:
+    tmp_index: TmpIndex
+    tmp_indexes: List[TmpIndex]
+
+
 def _get_prefix(tmp_indexes):
     idx, _ = min(enumerate(tmp_indexes), key=lambda x: x[1].subindexes[-1].len())
     tmp_indexes[-1], tmp_indexes[idx] = tmp_indexes[idx], tmp_indexes[-1]
@@ -752,15 +807,36 @@ def _get_prefix(tmp_indexes):
 
 
 def _remove_prefix(tmp_indexes, subindex):
-    new_tmp_indexes = []
+    class PrefixTmpIndexes:
+        def __init__(self):
+            self.prefix = None
+            self.tmp_indexes = []
+
+    with_common_prefix = []
+    with_custom_prefix = defaultdict(PrefixTmpIndexes)
     for tmp_index in tmp_indexes:
-        tmp_index = tmp_index.clone()
-        tmp_index.subindexes[-1] = tmp_index.subindexes[-1].remove_prefix(subindex)
-        if tmp_index.subindexes[-1].len() == 0:
-            tmp_index.subindexes.pop()
-        if tmp_index.subindexes:
-            new_tmp_indexes.append(tmp_index)
-    return new_tmp_indexes
+        for prefix, osubindex in tmp_index.subindexes[-1].remove_prefix(subindex):
+            new_tmp_index = tmp_index.clone()
+            new_tmp_index.subindexes[-1] = osubindex
+            if new_tmp_index.subindexes[-1].len() == 0:
+                new_tmp_index.subindexes.pop()
+            if new_tmp_index.subindexes:
+                if prefix is None:
+                    with_common_prefix.append(new_tmp_index)
+                else:
+                    prefix_tmp_indexes = with_custom_prefix[prefix.key()]
+                    prefix_tmp_indexes.prefix = prefix
+                    prefix_tmp_indexes.tmp_indexes.append(new_tmp_index)
+    if not with_custom_prefix:
+        return [(subindex, with_common_prefix)]
+
+    result = []
+    for prefix_tmp_indexes in with_custom_prefix.values():
+        prefix_tmp_indexes.tmp_indexes.extend(
+            x.clone() for x in with_common_prefix
+        )
+        result.append((prefix_tmp_indexes.prefix, prefix_tmp_indexes.tmp_indexes))
+    return result
 
 
 class Index:
@@ -822,44 +898,79 @@ class Index:
 
     def columns_till(self, till):
         columns = []
+        next_group = 0
         for subindex in self._subindexes:
             subindex_size = subindex.len()
             size = min(subindex_size, till)
-            columns.extend(subindex.columns_till(size))
+            largest_group = 0
+            for group, c in subindex.columns_till(size):
+                largest_group = max(largest_group, group)
+                columns.append((next_group + group, c))
+            next_group += largest_group + 1
             till -= subindex_size
             if till <= 0:
                 break
         return columns
 
-    def columns(self, idx):
-        i, j = self._subindexes_mapping[idx]
-        return self._subindexes[i].columns(j)
+    def columns_till_by_group(self, till):
+        columns_by_group = defaultdict(list)
+        for g, c in self.columns_till(till):
+            columns_by_group[g].append(c)
+        return columns_by_group
 
     def column(self, idx, name):
         i, j = self._subindexes_mapping[idx]
         return self._subindexes[i].column(j, name)
 
+    def columns(self, idx):
+        i, j = self._subindexes_mapping[idx]
+        return self._subindexes[i].columns(j)
+
     def len(self):
         return len(self._subindexes_mapping)
 
-    def is_prefix_of(self, other):
-        if self.len() > other.len():
-            return False
-        for i in range(self.len()):
-            if all(other.column(i, c.name) is None for c in self.columns(i)):
-                return False
-        return True
+    def indexes_with_suffix(self, uk):
+        for i in range(max(0, self.len()-uk.len()), self.len()+1):
+            for j in range(0, self.len()-i):
+                if all(self.column(i+j, c.name) is None for c in uk.columns(j)):
+                    break
+            else:
+                prefix, _ = self.split(i, uk)
+                subindexes = prefix._subindexes + uk._subindexes
+                # If the index with uk start at zero then it's the PK itself
+                uk_id = uk.uk_id if i == 0 else self.uk_id
+                logger = uk.logger.clone() if i == 0 else Logger()
+                queries = set(uk.queries) if i == 0 else set()
+                # The uk id is taken from the longest index but this is a extension of
+                # the index with the PK so is necessary use the shorter index uk id
+                index_with_uk = Index(subindexes, queries=queries, logger=logger, uk_id=uk_id)
+                yield from union_indexes([self, index_with_uk])
+                break
 
-    def remove_last(self, n):
+    def split(self, i, suffix):
+        column_names = {c.name for _, c in suffix.columns_till(suffix.len())}
         subindexes = list(self._subindexes)
+        subindexes_tail = []
+        n = self.len()-i
         while n > 0:
             subindex = subindexes.pop()
             if n < subindex.len():
-                subindex = subindex.remove_last(n)
-                subindexes.append(subindex)
+                a, b = subindex.split(subindex.len()-n, column_names)
+                subindexes.append(a)
+                subindexes_tail.append(b)
                 break
             n -= subindex.len()
-        return Index(subindexes, self.queries, self.logger, self.uk_id)
+            subindexes_tail.append(subindex)
+        subindexes_tail.reverse()
+        a = Index(subindexes, set(self.queries), self.logger.clone(), self.uk_id)
+        b = Index(subindexes_tail, set(self.queries), self.logger.clone(), self.uk_id)
+        return (a, b)
+
+    def num_permutations(self):
+        r = 1
+        for subindex in self._subindexes:
+            r *= subindex.num_permutations()
+        return r
 
 
 @dataclass
@@ -1023,6 +1134,7 @@ class SearchNode:
     size: int
     num_max_searchs: int
     num_queries_covered: int
+    sum_num_permutations: int
     num_queries_duplicated: int
     queries_covered: List[bool]
     indexes: List[Index]
@@ -1030,13 +1142,13 @@ class SearchNode:
     @staticmethod
     def new(num_queries, size):
         queries_covered = [False] * num_queries
-        return SearchNode(size, 0, 0, 0, queries_covered, [])
+        return SearchNode(size, 0, 0, 0, 0, queries_covered, [])
 
     def key(self):
         return tuple(self.queries_covered)
 
     def priority(self):
-        return (self.size, self.num_max_searchs, self.num_queries_duplicated)
+        return (self.size, self.num_max_searchs, -self.sum_num_permutations, self.num_queries_duplicated)
 
     def successors(self, indexes):
         for index in indexes:
@@ -1055,9 +1167,11 @@ class SearchNode:
             indexes = list(self.indexes)
             indexes.append(index)
             size = self.size + index.max_size()
+            sum_num_permutations = self.sum_num_permutations + index.num_permutations()
             num_max_searchs = self.num_max_searchs + index.num_max_searchs()
             yield SearchNode(size=size, num_max_searchs=num_max_searchs,
                              num_queries_covered=num_queries_covered,
+                             sum_num_permutations=sum_num_permutations,
                              num_queries_duplicated=num_queries_duplicated,
                              queries_covered=queries_covered,
                              indexes=indexes)
@@ -1074,48 +1188,20 @@ class IndexesSelector:
 
     def execute(self, pks):
         result = []
-        all_indexes = self._generate_all_indexes()
+        all_indexes = _generate_all_indexes(self._indexes)
         uk_indexes_grouped = self._group_indexes_by_uk_id(all_indexes)
         for uk_id, uk_indexes in uk_indexes_grouped.items():
             if pks is not None and uk_id not in pks:
                 continue
             uk_result = []
-            for uk_key, uk in uk_indexes.items():
-                tmp_all_indexes = self._append_uk_as_suffix(all_indexes, uk)
-                sn = self._search_indexes(tmp_all_indexes, uk)
-                if sn is not None:
-                    uk_result.append(((sn.priority(), uk_id, uk_key), (uk, sn)))
+            for uk in uk_indexes.values():
+                for pk, tmp_all_indexes in self._obtain_indexes_with_pk(all_indexes, uk):
+                    sn = self._search_indexes(tmp_all_indexes, uk)
+                    if sn is not None:
+                        uk_result.append(((sn.priority(), uk_id, pk.key()), (pk, sn)))
             if uk_result:
                 result.append(min(uk_result))
         return [x for _, x in sorted(result)]
-
-    def _generate_all_indexes(self):
-        all_indexes = {x.key(): x for x in self._indexes}
-        step_indexes = dict(all_indexes)
-        while step_indexes:
-            new_step_indexes = {}
-            for x in step_indexes.values():
-                for i, y in enumerate(self._indexes):
-                    if i in x.queries:
-                        continue
-                    if new_index := union_indexes([x, y]):
-                        key = new_index.key()
-                        if step_index := new_step_indexes.get(key):
-                            new_index = new_index.partial_union(step_index)
-                        new_step_indexes[key] = new_index
-            step_indexes = {}
-            for key, index in new_step_indexes.items():
-                other_index = all_indexes.get(key)
-                if other_index is None:
-                    step_indexes[key] = index
-                    all_indexes[key] = index
-                elif index.queries != other_index.queries:
-                    other_index = other_index.partial_union(index)
-                    step_indexes[key] = other_index
-                    all_indexes[key] = other_index
-
-        # The indexes are sorted to make the search reproducible
-        return [v for _, v in sorted(all_indexes.items())]
 
     def _group_indexes_by_uk_id(self, all_indexes):
         result = defaultdict(dict)
@@ -1124,37 +1210,43 @@ class IndexesSelector:
                 result[index.uk_id][index.key()] = index
         return result
 
-    def _append_uk_as_suffix(self, all_indexes, uk):
-        added_indexes = {}
+    def _obtain_indexes_with_pk(self, all_indexes, pk):
+        def _could_add_index_function(index):
+            return index.len() == pk.len()
 
-        def add_index(new_index):
-            k = new_index.key()
-            if added_index := added_indexes.get(k):
-                new_index = new_index.partial_union(added_index)
-            added_indexes[k] = new_index
-
+        possible_uk_suffixes = {}
         for index in all_indexes:
-            if index.uk_id == uk.uk_id:
+            if (index.uk_id == pk.uk_id) and (len(index.queries) == 1):
                 continue
-            columns = {x.name: x for x in index.columns_till(index.len())}
-            prefix_subindex = UnorderedSubindex(columns)
-            for i in range(max(0, index.len()-uk.len()), index.len()+1):
-                subindexes = [FixedSubindex(i, prefix_subindex)]
-                subindexes.extend(uk._subindexes)
-                # If the index with uk start at zero then it's the PK itself
-                uk_id = uk.uk_id if i == 0 else index.uk_id
-                # The uk id is taken from the longest index but this is a extension of the index
-                # with the PK so is necessary use the shorter index uk id
-                index_with_uk = Index(subindexes, queries=set(), logger=Logger(), uk_id=uk_id)
-                if new_index := union_indexes([index, index_with_uk]):
-                    add_index(new_index)
-                    break
-        add_index(uk)
-        return [v for _, v in sorted(added_indexes.items())]
+            for index_with_pk in index.indexes_with_suffix(pk):
+                _, suffix = index_with_pk.split(index_with_pk.len()-pk.len(), pk)
+                suffix.uk_id = pk.uk_id
+                _add_index(possible_uk_suffixes, suffix)
+
+        possible_suffixes = [v for _, v in sorted(possible_uk_suffixes.items())]
+        for possible_pk in _generate_all_indexes(possible_suffixes, _could_add_index_function):
+            if len(possible_pk.queries) >= self._num_queries_covered - 1:
+                indexes_with_pk = {}
+                valid_pk = True
+                for index in all_indexes:
+                    if index.uk_id == pk.uk_id:
+                        continue
+                    it = index.indexes_with_suffix(possible_pk)
+                    index_with_pk = next(it, None)
+                    if index_with_pk is None:
+                        valid_pk = False
+                        break
+                    _add_index(indexes_with_pk, index_with_pk)
+                if valid_pk:
+                    possible_pk = Index(possible_pk._subindexes, pk.queries, pk.logger, pk.uk_id)
+                    indexes = [v for _, v in sorted(indexes_with_pk.items())]
+                    indexes.append(possible_pk)
+                    yield (possible_pk, indexes)
 
     def _search_indexes(self, all_indexes, pk):
         size = sum(x.size for x in self._table.columns.values())
-        size -= sum(x.size for x in pk.columns_till(pk.len()))
+        for columns in pk.columns_till_by_group(pk.len()).values():
+            size -= max(x.size for x in columns)
         sn = SearchNode.new(self._num_queries, size)
         heap = [(sn.priority(), 0, sn)]
         idx = 1  # Use a counter to make the search reproducible
@@ -1193,20 +1285,24 @@ def recommend_cmd(args):
             print(f"    {i}. {s}")
         print()
 
+    num_queries_covered = 0
     indexes = []
     for i, query in enumerate(table.queries):
         print(f"Query #{i}")
         print(textwrap.indent(query.generate_sql(), "    "))
 
-        index = query.generate_index(i)
-        if index.len() > 0:
-            indexes.append(index)
+        covered = False
+        for index in query.generate_indexes(i):
+            if index.len() > 0:
+                indexes.append(index)
+                covered = True
+        if covered:
+            num_queries_covered += 1
 
     if not table.unique_indexes:
         print()
         print("Specify at least some unique index to serve as a primary key, for example some autoincremental column might be a good candidate.")
 
-    num_queries_covered = len(indexes)
     num_queries = fake_num_queries = len(table.queries)
 
     unique_indexes, fake_num_queries = _generate_unique_indexes(table, indexes, fake_num_queries)
@@ -1228,8 +1324,42 @@ def recommend_cmd(args):
             if index_with_pk.uk_id == uk.uk_id:
                 _print_index(index_with_pk, index_with_pk, index_with_pk.uk_id, num_queries)
             else:
-                index = index_with_pk.remove_last(uk.len())
+                index, _ = index_with_pk.split(index_with_pk.len()-uk.len(), uk)
                 _print_index(index, index_with_pk, uk.uk_id, num_queries)
+
+
+def _add_index(mapping, index):
+    k = index.key()
+    if added_index := mapping.get(k):
+        index = index.partial_union(added_index)
+    mapping[k] = index
+
+
+def _generate_all_indexes(indexes, could_add_index_function=lambda x: True):
+    all_indexes = {x.key(): x for x in indexes}
+    step_indexes = dict(all_indexes)
+    while step_indexes:
+        new_step_indexes = {}
+        for x in step_indexes.values():
+            for i, y in enumerate(indexes):
+                if i in x.queries:
+                    continue
+                for new_index in union_indexes([x, y]):
+                    if could_add_index_function(new_index):
+                        _add_index(new_step_indexes, new_index)
+        step_indexes = {}
+        for key, index in new_step_indexes.items():
+            other_index = all_indexes.get(key)
+            if other_index is None:
+                step_indexes[key] = index
+                all_indexes[key] = index
+            elif index.queries != other_index.queries:
+                other_index = other_index.partial_union(index)
+                step_indexes[key] = other_index
+                all_indexes[key] = other_index
+
+    # The indexes are sorted to make the search reproducible
+    return [v for _, v in sorted(all_indexes.items())]
 
 
 def _generate_unique_indexes(table, indexes, num_queries):
@@ -1238,19 +1368,19 @@ def _generate_unique_indexes(table, indexes, num_queries):
         queries_covered = set()
         uk_columns = {}
         for index in indexes:
-            num_uk_columns_used = 0
-            columns = index.columns_till(index.len())
-            for c in columns:
-                if c.restriction == ColumnRestriction.EQ:
-                    if c.name in uk_col_names:
-                        num_uk_columns_used += 1
-            if num_uk_columns_used == len(uk_col_names):
-                queries_covered.update(index.queries)
+            tmp_uk_columns = []
+            for columns in index.columns_till_by_group(index.len()).values():
                 for c in columns:
-                    if c.name in uk_col_names:
-                        if cc := uk_columns.get(c.name):
-                            c = c.union(cc)
-                        uk_columns[c.name] = c
+                    if c.restriction == ColumnRestriction.EQ:
+                        if c.name in uk_col_names:
+                            tmp_uk_columns.append(c)
+                            break
+            if len(tmp_uk_columns) == len(uk_col_names):
+                queries_covered.update(index.queries)
+                for c in tmp_uk_columns:
+                    if cc := uk_columns.get(c.name):
+                        c = c.union(cc)
+                    uk_columns[c.name] = c
         if not queries_covered:
             uk_columns = {name: table.columns[name] for name in uk_col_names}
         queries_covered.add(num_queries)
