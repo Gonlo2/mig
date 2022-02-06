@@ -964,6 +964,7 @@ class Index:
         subindexes_tail.reverse()
         a = Index(subindexes, set(self.queries), self.logger.clone(), self.uk_id)
         b = Index(subindexes_tail, set(self.queries), self.logger.clone(), self.uk_id)
+        b = b.partial_union(suffix)
         return (a, b)
 
     def num_permutations(self):
@@ -1200,7 +1201,7 @@ class IndexesSelector:
                     if sn is not None:
                         uk_result.append(((sn.priority(), uk_id, pk.key()), (pk, sn)))
             if uk_result:
-                result.append(min(uk_result))
+                result.append(min(uk_result, key=lambda t: t[0]))
         return [x for _, x in sorted(result)]
 
     def _group_indexes_by_uk_id(self, all_indexes):
@@ -1214,6 +1215,7 @@ class IndexesSelector:
         def _could_add_index_function(index):
             return index.len() == pk.len()
 
+
         possible_uk_suffixes = {}
         for index in all_indexes:
             if (index.uk_id == pk.uk_id) and (len(index.queries) == 1):
@@ -1226,6 +1228,7 @@ class IndexesSelector:
         possible_suffixes = [v for _, v in sorted(possible_uk_suffixes.items())]
         for possible_pk in _generate_all_indexes(possible_suffixes, _could_add_index_function):
             if len(possible_pk.queries) >= self._num_queries_covered - 1:
+                possible_pk = Index(possible_pk._subindexes, pk.queries, pk.logger, pk.uk_id)
                 indexes_with_pk = {}
                 valid_pk = True
                 for index in all_indexes:
@@ -1238,7 +1241,6 @@ class IndexesSelector:
                         break
                     _add_index(indexes_with_pk, index_with_pk)
                 if valid_pk:
-                    possible_pk = Index(possible_pk._subindexes, pk.queries, pk.logger, pk.uk_id)
                     indexes = [v for _, v in sorted(indexes_with_pk.items())]
                     indexes.append(possible_pk)
                     yield (possible_pk, indexes)
