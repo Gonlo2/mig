@@ -931,10 +931,11 @@ class Index:
 
     def indexes_with_suffix(self, uk):
         for i in range(max(0, self.len()-uk.len()), self.len()+1):
+            all_columns = []
             for j in range(0, self.len()-i):
-                if all(self.column(i+j, c.name) is None for c in uk.columns(j)):
-                    break
-            else:
+                columns = [cc for c in uk.columns(j) if (cc := self.column(i+j, c.name)) is not None]
+                all_columns.append(columns)
+            if self._has_valid_combination(all_columns, 0, set()):
                 prefix, _ = self.split(i, uk)
                 subindexes = prefix._subindexes + uk._subindexes
                 # If the index with uk start at zero then it's the PK itself
@@ -944,8 +945,19 @@ class Index:
                 # The uk id is taken from the longest index but this is a extension of
                 # the index with the PK so is necessary use the shorter index uk id
                 index_with_uk = Index(subindexes, queries=queries, logger=logger, uk_id=uk_id)
-                yield from union_indexes([self, index_with_uk])
-                break
+                return union_indexes([self, index_with_uk])
+        return []
+
+    def _has_valid_combination(self, columns, idx, seen_column_names):
+        if idx == len(columns):
+            return True
+        for c in columns[idx]:
+            if c.name not in seen_column_names:
+                seen_column_names.add(c.name)
+                if self._has_valid_combination(columns, idx+1, seen_column_names):
+                    return True
+                seen_column_names.remove(c.name)
+        return False
 
     def split(self, i, suffix):
         column_names = {c.name for _, c in suffix.columns_till(suffix.len())}
@@ -1215,7 +1227,6 @@ class IndexesSelector:
         def _could_add_index_function(index):
             return index.len() == pk.len()
 
-
         possible_uk_suffixes = {}
         for index in all_indexes:
             if (index.uk_id == pk.uk_id) and (len(index.queries) == 1):
@@ -1234,12 +1245,12 @@ class IndexesSelector:
                 for index in all_indexes:
                     if index.uk_id == pk.uk_id:
                         continue
-                    it = index.indexes_with_suffix(possible_pk)
-                    index_with_pk = next(it, None)
-                    if index_with_pk is None:
+                    indexes = index.indexes_with_suffix(possible_pk)
+                    if not indexes:
                         valid_pk = False
                         break
-                    _add_index(indexes_with_pk, index_with_pk)
+                    for index_with_pk in indexes:
+                        _add_index(indexes_with_pk, index_with_pk)
                 if valid_pk:
                     indexes = [v for _, v in sorted(indexes_with_pk.items())]
                     indexes.append(possible_pk)
@@ -1344,8 +1355,6 @@ def _generate_all_indexes(indexes, could_add_index_function=lambda x: True):
         new_step_indexes = {}
         for x in step_indexes.values():
             for i, y in enumerate(indexes):
-                if i in x.queries:
-                    continue
                 for new_index in union_indexes([x, y]):
                     if could_add_index_function(new_index):
                         _add_index(new_step_indexes, new_index)
