@@ -1320,7 +1320,7 @@ def recommend_cmd(args):
     recommendation = indexes_selector.execute(args.pk or None)
     recommendations.extend(recommendation)
 
-    # If the table don't have a autoincremental and the pk isn't forced we try to
+    # If the table don't have an autoincremental and the pk isn't forced we try to
     # add also a unique key
     if not args.pk and not _has_uk_with_autoincrement(table):
         recommendation = _make_recommendation_adding_autoincremental(args, table.clone())
@@ -1475,7 +1475,7 @@ def _make_recommendation_adding_autoincremental(args, table):
     subindex = OrderedSubindex([autoincremental_column])
     uk_id = len(unique_indexes)
     logger = Logger()
-    logger.recommendation("The table don't have a autoincremental column, so a fake column with an autoincremental has been added as a recommendation.")
+    logger.recommendation("The table don't have an autoincremental column, so a fake column with an autoincremental has been added as a recommendation.")
     autoincremental_index = Index([subindex],
                                   queries=set([num_queries+uk_id]),
                                   logger=logger,
