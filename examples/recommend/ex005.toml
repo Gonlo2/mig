@@ -1,6 +1,7 @@
 [[fields]]
 name = "id"
 size = 4
+is_autoincrement = true
 
 [[fields]]
 name = "audit_time"

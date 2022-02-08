@@ -1,8 +1,4 @@
 [[fields]]
-name = "id"
-size = 4
-
-[[fields]]
 name = "first_name"
 size = 255
 
@@ -13,9 +9,6 @@ size = 255
 [[fields]]
 name = "age"
 size = 1
-
-[[unique_indexes]]
-columns = ["id"]
 
 [[queries]]
 order_by = [["age", false]]

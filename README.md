@@ -11,14 +11,10 @@ First you need [pipenv](https://pipenv.pypa.io/en/latest/#) to install the depen
 ```shell
 $ pipenv run ./mig.py recommend examples/recommend/ex001.toml 
 Fields
-    `id` SIZE(4)
     `aaa` SIZE(4)
     `bbb` SIZE(4)
     `ccc` SIZE(255)
     `xxx` SIZE(255)
-
-Unique indexes
-    0. `id`
 
 Query #0
     SELECT * FROM `whatever`
@@ -67,15 +63,17 @@ Query #11
     SELECT * FROM `whatever`
         WHERE ((`aaa` = 123) AND (`bbb` = 1)) OR ((`ccc` = 22) AND (`aaa` = 123))
 
-PK recommendation #0 with columns `id` and max size per row of 1311 bytes
+PK recommendation #0 with columns `auto_id` and max size per row of 1311 bytes
 --------------------------------------------------------------------------------
 Index #0
-    Recommendation: PRIMARY KEY(`id`)
+    Recommendation: PRIMARY KEY(`auto_id`)
     To use by query:
     Max size with PK: 4 bytes
+    Log messages:
+      - RECOMMENDATION: The table don't have a autoincremental column, so a fake column with an autoincremental has been added as a recommendation.
     Pattern:
         Ordered subindex with the columns
-            0. `id`
+            0. `auto_id`
 Index #1
     Recommendation: KEY(`ccc`)
     To use by query: #9, #10
@@ -85,7 +83,7 @@ Index #1
     Pattern:
         Ordered subindex with the columns
             0. `ccc`
-            1. `id`
+            1. `auto_id`
 Index #2
     Recommendation: KEY(`aaa`, `ccc`)
     To use by query: #0, #1, #3, #4, #5, #7, #8, #11
@@ -97,7 +95,7 @@ Index #2
         Ordered subindex with the columns
             0. `aaa`
             1. `ccc`
-            2. `id`
+            2. `auto_id`
 Index #3
     Recommendation: KEY(`bbb`, `aaa`, `ccc`)
     To use by query: #2, #6
@@ -107,7 +105,7 @@ Index #3
             0. `bbb`
             1. `aaa`
             2. `ccc`
-            3. `id`
+            3. `auto_id`
 ```
 
 ## Table definition file format

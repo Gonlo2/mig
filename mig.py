@@ -35,6 +35,8 @@ def configure_recommend_arg_parser(p):
     p.add_argument('table_def', type=FileType('r'), help='the file with the table definition')
     p.add_argument('--pk', action='append', type=int, help='the ids of the unique keys to use as the primary key')
     p.add_argument('--limit-pks', type=int, default=None, help='limit the number of primary keys recommendation to show')
+    p.add_argument('--autoincremental-name', default='auto_id', help='the name of the autoincremental column to add if the table do not have one')
+    p.add_argument('--autoincremental-size', type=int, default=4, help='the size of the autoincremental column to add if the table do not have one')
 
 
 def dummy_cmd(args):
@@ -206,12 +208,16 @@ class Logger:
 
     class Level(Enum):
         WARNING = "WARNING"
+        RECOMMENDATION = "RECOMMENDATION"
 
     def __init__(self, messages=None):
         self._messages = messages or {}
 
     def warning(self, tmpl, *args, **kwargs):
         self._add_log(self.Level.WARNING, tmpl, args, kwargs)
+
+    def recommendation(self, tmpl, *args, **kwargs):
+        self._add_log(self.Level.RECOMMENDATION, tmpl, args, kwargs)
 
     def _add_log(self, level, tmpl, args, kwargs):
         self._messages[Logger._id] = (level, tmpl.format(*args, **kwargs))
@@ -380,7 +386,7 @@ class SelectQuery(Query):
 class Column:
     name: str
     size: int
-    autoincrement: bool = False
+    is_autoincrement: bool = False
     restriction: ColumnRestriction = ColumnRestriction.NONE
     values: Counter = field(default_factory=Counter)
 
@@ -392,7 +398,7 @@ class Column:
                       size=self.size,
                       restriction=self.restriction.merge(restriction),
                       values=self.values + values,
-                      autoincrement=self.autoincrement)
+                      is_autoincrement=self.is_autoincrement)
 
     def key(self):
         return f"{self.name}@{len(self.values)}"
@@ -756,7 +762,7 @@ def union_indexes(indexes, allow_not_covered=False):
                 logger = logger.union(index.logger)
             if allow_not_covered or index.len() == new_index_len:
                 uk_id = max(uk_id, index.uk_id)
-        index = tmp_index.to_index(queries, logger, uk_id)
+        index = tmp_index.to_index(queries=queries, logger=logger, uk_id=uk_id)
         result[index.key()] = index
     return [v for _, v in sorted(result.items())]
 
@@ -777,8 +783,8 @@ class TmpIndex:
             subindexes.append(subindex)
         return TmpIndex(subindexes)
 
-    def to_index(self, queries, logger, uk_id):
-        return Index(self.subindexes, queries, logger, uk_id)
+    def to_index(self, **kwargs):
+        return Index(self.subindexes, **kwargs)
 
     def len(self):
         return sum(x.len() for x in self.subindexes)
@@ -840,10 +846,16 @@ def _remove_prefix(tmp_indexes, subindex):
 
 
 class Index:
-    def __init__(self, subindexes: List[Subindex], queries: Set[int], logger: Logger, uk_id: int = -1):
+    def __init__(
+            self,
+            subindexes: List[Subindex],
+            queries: Set[int] = None,
+            logger: Logger = None,
+            uk_id: int = -1,
+    ):
         self._subindexes = subindexes
-        self.queries = queries
-        self.logger = logger
+        self.queries = queries or set()
+        self.logger = logger or Logger()
         self.uk_id = uk_id
         self._subindexes_mapping = self._make_subindexes_mapping()
 
@@ -855,7 +867,7 @@ class Index:
         queries = {*self.queries, *other.queries}
         logger = self.logger.union(other.logger)
         uk_id = max(self.uk_id, other.uk_id)
-        return Index(subindexes, queries, logger, uk_id)
+        return Index(subindexes, queries=queries, logger=logger, uk_id=uk_id)
 
     def peiority(self):
         return len(self._subindexes_mapping)
@@ -974,8 +986,8 @@ class Index:
             n -= subindex.len()
             subindexes_tail.append(subindex)
         subindexes_tail.reverse()
-        a = Index(subindexes, set(self.queries), self.logger.clone(), self.uk_id)
-        b = Index(subindexes_tail, set(self.queries), self.logger.clone(), self.uk_id)
+        a = Index(subindexes, queries=set(self.queries), logger=self.logger.clone(), uk_id=self.uk_id)
+        b = Index(subindexes_tail, queries=set(self.queries), logger=self.logger.clone(), uk_id=self.uk_id)
         b = b.partial_union(suffix)
         return (a, b)
 
@@ -992,6 +1004,11 @@ class Table:
     unique_indexes: List[Set[str]]
     queries: List[Query]
 
+    def clone(self):
+        return Table(columns=dict(self.columns),
+                     unique_indexes=list(self.unique_indexes),
+                     queries=list(self.queries))
+
 
 class Parser:
     def __init__(self):
@@ -1003,7 +1020,7 @@ class Parser:
         for x in table_def.get('fields', []):  #TODO rename to 'columns'
             column = Column(name=x["name"],
                             size=x["size"],
-                            autoincrement=bool(x.get("autoincrement")))
+                            is_autoincrement=bool(x.get("is_autoincrement")))
             columns[column.name] = column
 
         unique_indexes = []
@@ -1214,7 +1231,7 @@ class IndexesSelector:
                         uk_result.append(((sn.priority(), uk_id, pk.key()), (pk, sn)))
             if uk_result:
                 result.append(min(uk_result, key=lambda t: t[0]))
-        return [x for _, x in sorted(result)]
+        return result
 
     def _group_indexes_by_uk_id(self, all_indexes):
         result = defaultdict(dict)
@@ -1239,7 +1256,7 @@ class IndexesSelector:
         possible_suffixes = [v for _, v in sorted(possible_uk_suffixes.items())]
         for possible_pk in _generate_all_indexes(possible_suffixes, _could_add_index_function):
             if len(possible_pk.queries) >= self._num_queries_covered - 1:
-                possible_pk = Index(possible_pk._subindexes, pk.queries, pk.logger, pk.uk_id)
+                possible_pk = Index(possible_pk._subindexes, queries=pk.queries, logger=pk.logger, uk_id=pk.uk_id)
                 indexes_with_pk = {}
                 valid_pk = True
                 for index in all_indexes:
@@ -1285,45 +1302,31 @@ def recommend_cmd(args):
     parser = Parser()
 
     table = parser.parse(table_def)
+    _print_table(table)
 
-    print("Fields")
-    for i, col in enumerate(table.columns.values()):
-        print(f"    `{col.name}` SIZE({col.size})")
-    print()
+    recommendations = []
 
-    if table.unique_indexes:
-        print("Unique indexes")
-        for i, unique_index in enumerate(table.unique_indexes):
-            s = ', '.join(f"`{x}`" for x in sorted(unique_index))
-            print(f"    {i}. {s}")
-        print()
+    # Generate the normal recommendations
+    num_queries = len(table.queries)
+    indexes, num_queries_covered = _generate_indexes(table)
+    unique_indexes = _generate_unique_indexes(table, indexes, num_queries)
 
-    num_queries_covered = 0
-    indexes = []
-    for i, query in enumerate(table.queries):
-        print(f"Query #{i}")
-        print(textwrap.indent(query.generate_sql(), "    "))
+    fake_num_queries_covered = num_queries_covered + len(unique_indexes)
+    fake_num_queries = num_queries + len(unique_indexes)
+    indexes_selector = IndexesSelector(table,
+                                       indexes + unique_indexes,
+                                       fake_num_queries_covered,
+                                       fake_num_queries)
+    recommendation = indexes_selector.execute(args.pk or None)
+    recommendations.extend(recommendation)
 
-        covered = False
-        for index in query.generate_indexes(i):
-            if index.len() > 0:
-                indexes.append(index)
-                covered = True
-        if covered:
-            num_queries_covered += 1
+    # If the table don't have a autoincremental and the pk isn't forced we try to
+    # add also a unique key
+    if not args.pk and not _has_uk_with_autoincrement(table):
+        recommendation = _make_recommendation_adding_autoincremental(args, table.clone())
+        recommendations.extend(recommendation)
 
-    if not table.unique_indexes:
-        print()
-        print("Specify at least some unique index to serve as a primary key, for example some autoincremental column might be a good candidate.")
-
-    num_queries = fake_num_queries = len(table.queries)
-
-    unique_indexes, fake_num_queries = _generate_unique_indexes(table, indexes, fake_num_queries)
-    indexes.extend(unique_indexes)
-    num_queries_covered += fake_num_queries - num_queries
-
-    indexes_selector = IndexesSelector(table, indexes, num_queries_covered, fake_num_queries)
-    for i, (uk, sn) in enumerate(indexes_selector.execute(args.pk or None)):
+    for i, (_, (uk, sn)) in enumerate(sorted(recommendations)):
         if args.limit_pks is not None and i >= args.limit_pks:
             break
         print()
@@ -1339,6 +1342,38 @@ def recommend_cmd(args):
             else:
                 index, _ = index_with_pk.split(index_with_pk.len()-uk.len(), uk)
                 _print_index(index, index_with_pk, uk.uk_id, num_queries)
+
+
+def _print_table(table):
+    print("Fields")
+    for i, col in enumerate(table.columns.values()):
+        print(f"    `{col.name}` SIZE({col.size})")
+    print()
+
+    if table.unique_indexes:
+        print("Unique indexes")
+        for i, unique_index in enumerate(table.unique_indexes):
+            s = ', '.join(f"`{x}`" for x in sorted(unique_index))
+            print(f"    {i}. {s}")
+        print()
+
+    for i, query in enumerate(table.queries):
+        print(f"Query #{i}")
+        print(textwrap.indent(query.generate_sql(), "    "))
+
+
+def _generate_indexes(table):
+    num_queries_covered = 0
+    indexes = []
+    for i, query in enumerate(table.queries):
+        covered = False
+        for index in query.generate_indexes(i):
+            if index.len() > 0:
+                indexes.append(index)
+                covered = True
+        if covered:
+            num_queries_covered += 1
+    return (indexes, num_queries_covered)
 
 
 def _add_index(mapping, index):
@@ -1373,6 +1408,13 @@ def _generate_all_indexes(indexes, could_add_index_function=lambda x: True):
     return [v for _, v in sorted(all_indexes.items())]
 
 
+def _has_uk_with_autoincrement(table):
+    for uk_id, uk_col_names in enumerate(table.unique_indexes):
+        if any(table.columns[name].is_autoincrement for name in uk_col_names):
+            return True
+    return False
+
+
 def _generate_unique_indexes(table, indexes, num_queries):
     unique_indexes = []
     for uk_id, uk_col_names in enumerate(table.unique_indexes):
@@ -1398,9 +1440,9 @@ def _generate_unique_indexes(table, indexes, num_queries):
         num_queries += 1
         subindex = UnorderedSubindex(uk_columns).unify()
         #TODO Deal with the indexes logger
-        uk = Index([subindex], queries_covered, logger=Logger(), uk_id=uk_id)
+        uk = Index([subindex], queries=queries_covered, uk_id=uk_id)
         unique_indexes.append(uk)
-    return (unique_indexes, num_queries)
+    return unique_indexes
 
 
 def _print_index(index, index_with_pk, uk_id, real_num_queries):
@@ -1417,6 +1459,36 @@ def _print_index(index, index_with_pk, uk_id, real_num_queries):
             print(f"      - {level.value}: {msg}")
     print("    Pattern:")
     print(textwrap.indent(index_with_pk.explain(), "        "))
+
+
+def _make_recommendation_adding_autoincremental(args, table):
+    autoincremental_column = Column(args.autoincremental_name,
+                                    size=args.autoincremental_size,
+                                    is_autoincrement=True)
+    table.columns[args.autoincremental_name] = autoincremental_column
+    table.unique_indexes.append(set([args.autoincremental_name]))
+
+    num_queries = len(table.queries)
+    indexes, num_queries_covered = _generate_indexes(table)
+    unique_indexes = _generate_unique_indexes(table, indexes, num_queries)
+
+    subindex = OrderedSubindex([autoincremental_column])
+    uk_id = len(unique_indexes)
+    logger = Logger()
+    logger.recommendation("The table don't have a autoincremental column, so a fake column with an autoincremental has been added as a recommendation.")
+    autoincremental_index = Index([subindex],
+                                  queries=set([num_queries+uk_id]),
+                                  logger=logger,
+                                  uk_id=uk_id)
+    unique_indexes = unique_indexes + [autoincremental_index]
+    fake_num_queries_covered = num_queries_covered + len(unique_indexes)
+    fake_num_queries = num_queries + len(unique_indexes)
+    indexes_selector = IndexesSelector(table,
+                                       indexes + unique_indexes,
+                                       fake_num_queries_covered,
+                                       fake_num_queries)
+    autoincremental_index_pos = len(unique_indexes)-1
+    return indexes_selector.execute([autoincremental_index_pos])
 
 
 def main():
