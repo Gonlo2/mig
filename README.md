@@ -32,6 +32,7 @@ Query #4
     SELECT * FROM `whatever`
         WHERE `aaa` >= 22
         ORDER BY `aaa` ASC
+        LIMIT 1
 Query #5
     SELECT * FROM `whatever`
         ORDER BY `aaa` DESC
@@ -70,7 +71,7 @@ Index #0
     To use by query:
     Max size with PK: 4 bytes
     Log messages:
-      - RECOMMENDATION: The table don't have a autoincremental column, so a fake column with an autoincremental has been added as a recommendation.
+      - RECOMMENDATION: The table don't have an autoincremental column, so a fake column with an autoincremental has been added as a recommendation.
     Pattern:
         Ordered subindex with the columns
             0. `auto_id`
@@ -89,6 +90,7 @@ Index #2
     To use by query: #0, #1, #3, #4, #5, #7, #8, #11
     Max size with PK: 263 bytes
     Log messages:
+      - RECOMMENDATION: If you are going to get all the values in the query #5 it is probably better to remove the `ORDER BY` and sort the values in the application
       - WARNING: Isn't possible optimize both the `ORDER BY` and the `GROUP BY` in the query #7, so only the `GROUP BY` will be optimized
       - WARNING: Isn't possible optimize all the `OR` operator of the query #11, try to refactor it to execute multiple queries concatenating the output with an `UNION`
     Pattern:

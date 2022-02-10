@@ -273,6 +273,9 @@ class SelectQuery(Query):
             logger.warning("Isn't possible optimize both the `ORDER BY` and the `GROUP BY` in the query #{}, so only the `GROUP BY` will be optimized", query_id)
             order_by_columns = []
 
+        if self.order_by and not self.group_by and self.limit is None:
+            logger.recommendation("If you are going to get all the values in the query #{} it is probably better to remove the `ORDER BY` and sort the values in the application", query_id)
+
         if self.where is None:
             subindexes = self._generate_subindexes({},
                                                    order_by_columns,

@@ -59,6 +59,7 @@ value = 'xyz'
 
 [[queries]]
 order_by = ["aaa"] # Order in ascendance order
+limit = 1
 [queries.where]
 operator = ">="
 column = "aaa"
